@@ -1,0 +1,183 @@
+AWSTemplateFormatVersion: 2010-09-09
+Resources:
+  AppVersion: 
+    Type: 'AWS::ElasticBeanstalk::ApplicationVersion'
+    Properties: 
+      ApplicationName: !Ref 'ElasticBeanstalkApplication'
+      SourceBundle: ''
+  ElasticBeanstalkApplication:
+    Type: 'AWS::ElasticBeanstalk::Application'
+    Properties:
+      ApplicationName: !Ref 'AWS::StackName'
+  ElasticBeanstalkEnvironment:
+    Type: 'AWS::ElasticBeanstalk::Environment'
+    Properties:
+      ApplicationName: !Ref ElasticBeanstalkApplication
+      PlatformArn: !Sub >-
+        arn:aws:elasticbeanstalk:${AWS::Region}::platform/Multi-container Docker running on 64bit Amazon Linux/2.9.2
+      EnvironmentName: !Sub '${AWS::StackName}-Env'
+      VersionLabel: !Ref 'AppVersion'
+      OptionSettings: 
+        - Namespace: "aws:elasticbeanstalk:environment"
+          OptionName: LoadBalancerType
+          Value: network
+        - Namespace: 'aws:elasticbeanstalk:environment'
+          OptionName: ServiceRole
+          Value: !Ref ServiceRole
+        - Namespace: "aws:elbv2:listener:443"
+          OptionName: DefaultProcess
+          Value: https
+        - Namespace: "aws:elbv2:listener:443"
+          OptionName: ListenerEnabled
+          Value: true
+        - Namespace: "aws:elasticbeanstalk:environment:process:https"
+          OptionName: Port
+          Value: 443
+        - Namespace: 'aws:autoscaling:launchconfiguration'
+          OptionName: IamInstanceProfile
+          Value: !Ref InstanceProfile
+        - Namespace: 'aws:autoscaling:asg'
+          OptionName: MinSize
+          Value: 2
+        - Namespace: 'aws:autoscaling:asg'
+          OptionName: MaxSize
+          Value: 10
+        - Namespace: 'aws:ec2:vpc'
+          OptionName: VPCId
+          Value: !Ref 'VPC'
+        - Namespace: 'aws:ec2:vpc'
+          OptionName: ELBSubnets
+          Value: !Sub '${SubnetA},${SubnetB},${SubnetC}'
+        - Namespace: 'aws:ec2:vpc'
+          OptionName: AssociatePublicIpAddress
+          Value: true
+        - Namespace: 'aws:ec2:vpc'
+          OptionName: Subnets
+          Value: !Sub '${SubnetA},${SubnetB},${SubnetC}'          
+        - Namespace: 'aws:ec2:vpc'
+          OptionName: ELBScheme
+          Value: internal
+  ServiceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: ''
+            Effect: Allow
+            Principal:
+              Service: 'elasticbeanstalk.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkEnhancedHealth
+        - arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkService
+  InstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: /
+      Roles:
+        - !Ref InstanceProfileRole
+  InstanceProfileRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - 'ec2.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSElasticBeanstalkMulticontainerDocker
+        - arn:aws:iam::aws:policy/AWSElasticBeanstalkWebTier
+      Path: /
+      
+  VPC:
+    Type: "AWS::EC2::VPC"
+    Properties: 
+      CidrBlock: 10.0.0.0/26
+      Tags:
+        - Key: Name
+          Value: proxy-vpc
+  SubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock: 10.0.0.0/28
+      AvailabilityZone: 
+        Fn::Select: 
+          - 0
+          - Fn::GetAZs: ""
+      Tags:
+      - Key: Name
+        Value: proxy-pub-a
+  SubnetRouteTableAssociationA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RouteTable
+      SubnetId: !Ref SubnetA
+  SubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock: 10.0.0.16/28
+      AvailabilityZone: 
+        Fn::Select: 
+          - 1
+          - Fn::GetAZs: ""
+      Tags:
+      - Key: Name
+        Value: proxy-pub-b
+  SubnetRouteTableAssociationB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RouteTable
+      SubnetId: !Ref SubnetB
+  SubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock: 10.0.0.32/28
+      AvailabilityZone: 
+        Fn::Select: 
+          - 2
+          - Fn::GetAZs: ""
+      Tags:
+      - Key: Name
+        Value: proxy-pub-c
+  SubnetRouteTableAssociationC:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RouteTable
+      SubnetId: !Ref SubnetC
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+      - Key: Name
+        Value: !Sub 'igw-${VPC}'
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: Route table with IGW
+  Route:
+    DependsOn: VPCGatewayAttachment
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref RouteTable
+      GatewayId: !Ref InternetGateway
+      DestinationCidrBlock: 0.0.0.0/0
+

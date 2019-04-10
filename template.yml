@@ -14,7 +14,7 @@ Resources:
     Properties:
       ApplicationName: !Ref ElasticBeanstalkApplication
       PlatformArn: !Sub >-
-        arn:aws:elasticbeanstalk:${AWS::Region}::platform/Multi-container Docker running on 64bit Amazon Linux/2.9.2
+        arn:aws:elasticbeanstalk:${AWS::Region}::platform/Multi-container Docker running on 64bit Amazon Linux/2.12.0
       EnvironmentName: !Sub '${AWS::StackName}-Env'
       VersionLabel: !Ref 'AppVersion'
       OptionSettings: 

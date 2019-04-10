@@ -180,4 +180,18 @@ Resources:
       RouteTableId: !Ref RouteTable
       GatewayId: !Ref InternetGateway
       DestinationCidrBlock: 0.0.0.0/0
+      
+  VPCEndpointService:
+    Type: "AWS::EC2::VPCEndpointService"
+    Properties:
+      NetworkLoadBalancerArns: 
+        - !Sub 
+          - 'arn:aws:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/net/awseb-AWSEB-${EbPrimaryId}/${EbSecondaryId}'
+          - EbPrimaryId: !Select [2, !Split ['-', !Select [0, !Split ['.',!GetAtt ElasticBeanstalkEnvironment.EndpointURL]]]]
+            EbSecondaryId: !Select [3, !Split ['-', !Select [0, !Split ['.',!GetAtt ElasticBeanstalkEnvironment.EndpointURL]]]]
+      AcceptanceRequired: False
 
+Outputs: 
+  VPCEndpointServiceId: 
+    Value: !Ref VPCEndpointService
+        

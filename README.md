@@ -5,8 +5,14 @@ This product is auto-scalable and is based on a high availability architecture. 
  
 To build the project, 
 
- * Execute the following command `aws cloudformation package --template template.yaml --s3-bucket {S3_BUCKET} --output-template template-export.yml
- * Then `aws cloudformation deploy --template-file template-export.yml --stack-name {STACK_NAME} --capabilities CAPABILITY_IAM`
+ * Execute the following commands (to be replaced in cdk using DockerImageAsset class):
+```
+aws ecr create-repository --repository-name aws-proxy
+$(aws ecr get-login --no-include-email)
+docker build -t XXXXXXXXXXXX.dkr.ecr.us-west-2.amazonaws.com/aws-proxy:latest .
+docker push XXXXXXXXXXXX.dkr.ecr.us-west-2.amazonaws.com/aws-proxy:latest
+```
+ * Then `aws cloudformation deploy --template-file template.yml --stack-name {STACK_NAME} --capabilities CAPABILITY_IAM`
 
 Once the stack is deployed, run `aws ec2 describe-vpc-endpoint-services --query 'ServiceDetails[?Owner!=`amazon`]'` in order to get the endpoint Service name. From the AWS console, with this endpoint service name, you will be able to create a VPC endpoint to any VPC of your choice.
 

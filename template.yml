@@ -1,99 +1,263 @@
 AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+  Repository:
+    Type: String
+    
+  Tag:
+    Type: String
+    Default: latest
+    
+  AutoScalingMinCapacity:
+    Type: Number
+    Default: 1
+    
+  AutoScalingMaxCapacity:
+    Type: Number
+    Default: 10
+    
+  AutoScalingTargetValue:
+    Type: Number
+    Description: Expected CPU usage (in %) to target
+    Default: 75
+    
 Resources:
-  AppVersion: 
-    Type: 'AWS::ElasticBeanstalk::ApplicationVersion'
-    Properties: 
-      ApplicationName: !Ref 'ElasticBeanstalkApplication'
-      SourceBundle: ''
-  ElasticBeanstalkApplication:
-    Type: 'AWS::ElasticBeanstalk::Application'
+  ## Application defintion
+  
+  Cluster:
+    Type: AWS::ECS::Cluster
     Properties:
-      ApplicationName: !Ref 'AWS::StackName'
-  ElasticBeanstalkEnvironment:
-    Type: 'AWS::ElasticBeanstalk::Environment'
+      ClusterName: !Ref AWS::StackName
+
+  NetworkLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
-      ApplicationName: !Ref ElasticBeanstalkApplication
-      PlatformArn: !Sub >-
-        arn:aws:elasticbeanstalk:${AWS::Region}::platform/Multi-container Docker running on 64bit Amazon Linux/2.12.0
-      EnvironmentName: !Sub '${AWS::StackName}-Env'
-      VersionLabel: !Ref 'AppVersion'
-      OptionSettings: 
-        - Namespace: "aws:elasticbeanstalk:environment"
-          OptionName: LoadBalancerType
-          Value: network
-        - Namespace: 'aws:elasticbeanstalk:environment'
-          OptionName: ServiceRole
-          Value: !Ref ServiceRole
-        - Namespace: "aws:elbv2:listener:443"
-          OptionName: DefaultProcess
-          Value: https
-        - Namespace: "aws:elbv2:listener:443"
-          OptionName: ListenerEnabled
-          Value: true
-        - Namespace: "aws:elasticbeanstalk:environment:process:https"
-          OptionName: Port
-          Value: 443
-        - Namespace: 'aws:autoscaling:launchconfiguration'
-          OptionName: IamInstanceProfile
-          Value: !Ref InstanceProfile
-        - Namespace: 'aws:autoscaling:asg'
-          OptionName: MinSize
-          Value: 2
-        - Namespace: 'aws:autoscaling:asg'
-          OptionName: MaxSize
-          Value: 10
-        - Namespace: 'aws:ec2:vpc'
-          OptionName: VPCId
-          Value: !Ref 'VPC'
-        - Namespace: 'aws:ec2:vpc'
-          OptionName: ELBSubnets
-          Value: !Sub '${SubnetA},${SubnetB},${SubnetC}'
-        - Namespace: 'aws:ec2:vpc'
-          OptionName: AssociatePublicIpAddress
-          Value: true
-        - Namespace: 'aws:ec2:vpc'
-          OptionName: Subnets
-          Value: !Sub '${SubnetA},${SubnetB},${SubnetC}'          
-        - Namespace: 'aws:ec2:vpc'
-          OptionName: ELBScheme
-          Value: internal
-  ServiceRole:
+      Type: network
+      Scheme: internal
+      Subnets: 
+        - !Ref SubnetA
+        - !Ref SubnetB
+        - !Ref SubnetC
+  
+  LoadBalancerListener443:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref NetworkLoadBalancer
+      Port: 443
+      Protocol: TCP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  LoadBalancerListener80:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref NetworkLoadBalancer
+      Port: 80
+      Protocol: TCP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VPC
+      TargetType: ip
+      Port: 3128
+      Protocol: TCP
+      HealthCheckIntervalSeconds: 10
+      HealthCheckProtocol: TCP
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 5
+      UnhealthyThresholdCount: 5
+      HealthCheckEnabled: True
+      HealthCheckPort: traffic-port
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '30'
+      Tags:
+        - Key: Image
+          Value: !Ref Tag
+
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Ref AWS::StackName
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '3128'
+          ToPort: '3128'
+          CidrIp: 192.168.0.0/16
+        - IpProtocol: tcp
+          FromPort: '3128'
+          ToPort: '3128'
+          CidrIp: 172.16.0.0/12
+        - IpProtocol: tcp
+          FromPort: '3128'
+          ToPort: '3128'
+          CidrIp: 10.0.0.0/8
+      VpcId: !Ref VPC
+      
+  Service:
+    DependsOn: 
+      - LoadBalancerListener80
+      - LoadBalancerListener443
+    Type: AWS::ECS::Service
+    Properties:
+      HealthCheckGracePeriodSeconds: 45
+      Cluster: !Ref Cluster
+      DesiredCount: !Ref AutoScalingMinCapacity
+      LaunchType: FARGATE
+      TaskDefinition: !Ref TaskDefinition
+      LoadBalancers:
+        - ContainerName: application
+          ContainerPort: 3128
+          TargetGroupArn: !Ref TargetGroup
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+             - !GetAtt TaskSecurityGroup.GroupId
+          Subnets: 
+             - !Ref SubnetA
+             - !Ref SubnetB
+             - !Ref SubnetC
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Cpu: '256'
+      Memory: '512'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+       - FARGATE
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      Volumes: 
+        - Name: "log_scratch"
+      ContainerDefinitions:
+        - Name: application
+          Image: !Sub ${Repository}:${Tag}
+          Essential: true
+          LogConfiguration: 
+            LogDriver: awslogs
+            Options: 
+              awslogs-group: !Ref ApplicationContainerLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+          PortMappings:
+            - ContainerPort: 3128
+          Cpu: 156
+          Memory: 412
+          MountPoints:
+            - ContainerPath: /var/log/squid3
+              SourceVolume: log_scratch
+          Environment:
+            - Name: Tag
+              Value: !Ref Tag
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+        - Name: cwlogs
+          Image: joshbalfour/cloudwatch-logs
+          Essential: true
+          Cpu: 100
+          Memory: 100
+          MountPoints:
+            - ContainerPath: /mnt/logs
+              SourceVolume: log_scratch
+          Command:
+            - !Sub /mnt/logs/access.log:${SquidAccessLogGroup}
+          Environment:
+            - Name: Tag
+              Value: !Ref Tag
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+  
+  ApplicationContainerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties : 
+      LogGroupName : !Sub /ecs/${Cluster}
+      RetentionInDays : 14
+  
+  SquidAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties : 
+      LogGroupName : !Sub /ecs/${Cluster}/access.log
+      RetentionInDays : 14
+      
+  AutoScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MinCapacity: !Ref AutoScalingMinCapacity
+      MaxCapacity: !Ref AutoScalingMaxCapacity
+      ResourceId: !Sub service/${Cluster}/${Service.Name}
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+      RoleARN: !GetAtt FargateAutoscalingRole.Arn
+  
+  TargetTrackingScalingAutoScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub ${Service.Name}TargetTrackingAutoScalingPolicy
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref AutoScalingTarget
+      TargetTrackingScalingPolicyConfiguration: 
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        ScaleInCooldown: 10
+        ScaleOutCooldown: 10
+        TargetValue: !Ref AutoScalingTargetValue
+        
+  FargateAutoscalingRole:
     Type: 'AWS::IAM::Role'
     Properties:
-      AssumeRolePolicyDocument:
-        Version: 2012-10-17
-        Statement:
-          - Sid: ''
-            Effect: Allow
-            Principal:
-              Service: 'elasticbeanstalk.amazonaws.com'
-            Action: 'sts:AssumeRole'
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkEnhancedHealth
-        - arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkService
-  InstanceProfile:
-    Type: 'AWS::IAM::InstanceProfile'
-    Properties:
-      Path: /
-      Roles:
-        - !Ref InstanceProfileRole
-  InstanceProfileRole:
-    Type: 'AWS::IAM::Role'
-    Properties:
+      Path: /service-role/
       AssumeRolePolicyDocument:
         Version: 2012-10-17
         Statement:
           - Effect: Allow
             Principal:
-              Service:
-                - 'ec2.amazonaws.com'
-            Action:
-              - 'sts:AssumeRole'
+              Service: ecs.application-autoscaling.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: FargateAutoscalingPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Resource: '*'
+                Effect: Allow
+                Action: 
+                  - ecs:DescribeServices
+                  - ecs:UpdateService
+                  - cloudwatch:DeleteAlarms
+                  - cloudwatch:DescribeAlarms
+                  - cloudwatch:PutMetricAlarm
+  
+  ECSTaskExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      Path: /service-role/
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AWSElasticBeanstalkMulticontainerDocker
-        - arn:aws:iam::aws:policy/AWSElasticBeanstalkWebTier
-      Path: /
-      
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: CreateLogGroupPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Resource: '*'
+                Effect: Allow
+                Action: 
+                  - logs:CreateLogGroup
+  
+  ## VPC Definition
   VPC:
     Type: "AWS::EC2::VPC"
     Properties: 
@@ -185,13 +349,9 @@ Resources:
     Type: "AWS::EC2::VPCEndpointService"
     Properties:
       NetworkLoadBalancerArns: 
-        - !Sub 
-          - 'arn:aws:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/net/awseb-AWSEB-${EbPrimaryId}/${EbSecondaryId}'
-          - EbPrimaryId: !Select [2, !Split ['-', !Select [0, !Split ['.',!GetAtt ElasticBeanstalkEnvironment.EndpointURL]]]]
-            EbSecondaryId: !Select [3, !Split ['-', !Select [0, !Split ['.',!GetAtt ElasticBeanstalkEnvironment.EndpointURL]]]]
+        - !Ref NetworkLoadBalancer
       AcceptanceRequired: False
 
 Outputs: 
   VPCEndpointServiceId: 
     Value: !Ref VPCEndpointService
-        
